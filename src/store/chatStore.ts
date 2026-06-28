@@ -16,6 +16,7 @@ import {
 } from "../../shared/chat";
 
 const CUSTOMER_SESSION_STORAGE_KEY = "fb-chat-customer-session";
+const CUSTOMER_NAME_STORAGE_KEY = "fb-chat-customer-name";
 const AGENT_SESSION_STORAGE_KEY = "fb-chat-agent-selected-session";
 
 function resolveServerUrl(): string | undefined {
@@ -73,7 +74,24 @@ function writeStoredCustomerSession(session: StoredCustomerSession): void {
     return;
   }
 
+  window.localStorage.setItem(CUSTOMER_NAME_STORAGE_KEY, session.customerName);
   window.localStorage.setItem(CUSTOMER_SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function clearStoredCustomerSession(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(CUSTOMER_SESSION_STORAGE_KEY);
+}
+
+function readStoredCustomerName(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  return window.localStorage.getItem(CUSTOMER_NAME_STORAGE_KEY)?.trim() || "";
 }
 
 function readStoredAgentSelection(): string | null {
@@ -98,6 +116,7 @@ function writeStoredAgentSelection(sessionId: string | null): void {
 }
 
 const storedCustomerSession = readStoredCustomerSession();
+const storedCustomerName = readStoredCustomerName();
 const storedAgentSelection = readStoredAgentSelection();
 
 interface ChatState {
@@ -115,6 +134,7 @@ interface ChatState {
   connect: (role: Role) => void;
   setCustomerName: (customerName: string) => void;
   initCustomerSession: (customerNameOverride?: string) => void;
+  logoutCustomer: () => void;
   subscribeAgent: () => void;
   selectSession: (sessionId: string) => void;
   sendMessage: (payload: { text?: string; mediaUrl?: string; mediaType?: "image" }) => void;
@@ -139,7 +159,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   role: null,
   socket: null,
   sessionId: storedCustomerSession?.sessionId ?? null,
-  customerName: storedCustomerSession?.customerName ?? "",
+  customerName: storedCustomerSession?.customerName ?? storedCustomerName,
   selectedSessionId: storedAgentSelection,
   sessions: [],
   messagesBySession: {},
@@ -253,6 +273,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   setCustomerName: (customerName) => {
     const trimmed = customerName.trim();
+    if (typeof window !== "undefined" && trimmed) {
+      window.localStorage.setItem(CUSTOMER_NAME_STORAGE_KEY, trimmed);
+    }
     set({ customerName: trimmed });
   },
   initCustomerSession: (customerNameOverride) => {
@@ -273,6 +296,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set({ customerName });
     socket.emit("session:init", payload);
+  },
+  logoutCustomer: () => {
+    clearStoredCustomerSession();
+    get().socket?.emit("session:logout");
+    set((state) => {
+      const nextMessagesBySession = { ...state.messagesBySession };
+      if (state.sessionId) {
+        delete nextMessagesBySession[state.sessionId];
+      }
+
+      const nextTypingBySession = { ...state.typingBySession };
+      if (state.sessionId) {
+        delete nextTypingBySession[state.sessionId];
+      }
+
+      return {
+        sessionId: null,
+        customerName: readStoredCustomerName(),
+        messagesBySession: nextMessagesBySession,
+        typingBySession: nextTypingBySession,
+        error: null,
+      };
+    });
   },
   subscribeAgent: () => {
     get().socket?.emit("agent:subscribe");

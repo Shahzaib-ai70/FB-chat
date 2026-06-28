@@ -11,6 +11,7 @@ export function CustomerChatPage() {
     customerName,
     deleteMessage,
     initCustomerSession,
+    logoutCustomer,
     messagesBySession,
     sendMessage,
     setCustomerName,
@@ -53,15 +54,22 @@ export function CustomerChatPage() {
         <div className="panel-header">
           <div>
             <p className="eyebrow">Facebook Chat</p>
-            <h2>{customerName}</h2>
+            <h2>{customerName || "Login to continue"}</h2>
           </div>
-          <span
-            aria-label={agentOnlineCount > 0 ? "Support online" : "Support offline"}
-            className={`presence-dot ${agentOnlineCount > 0 ? "online" : "offline"}`}
-            title={agentOnlineCount > 0 ? "Support online" : "Support offline"}
-          >
-            <span className="live-dot" />
-          </span>
+          <div className="panel-actions">
+            {sessionId ? (
+              <button className="logout-button" onClick={logoutCustomer} type="button">
+                Logout
+              </button>
+            ) : null}
+            <span
+              aria-label={agentOnlineCount > 0 ? "Support online" : "Support offline"}
+              className={`presence-dot ${agentOnlineCount > 0 ? "online" : "offline"}`}
+              title={agentOnlineCount > 0 ? "Support online" : "Support offline"}
+            >
+              <span className="live-dot" />
+            </span>
+          </div>
         </div>
         <ConversationFeed
           customerName={customerName}
@@ -88,7 +96,7 @@ export function CustomerChatPage() {
             <p className="eyebrow">Facebook Chat</p>
             <h2 id="chat-name-title">Add your name to open chat</h2>
             <p className="hero-copy">
-              Enter your name first, then the live chat page will open and connect you with support.
+              Enter your name to login or reopen your old chat history with support.
             </p>
             <input
               className="name-input"
@@ -109,7 +117,7 @@ export function CustomerChatPage() {
               onClick={handleOpenChat}
               type="button"
             >
-              Open Chat
+              Login / Open Chat
             </button>
           </div>
         </div>

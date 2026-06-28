@@ -1,9 +1,9 @@
 import express from "express";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Server } from "socket.io";
+import { Server, type Socket as ServerSocket } from "socket.io";
 import {
   appendMessage,
   createId,
@@ -22,6 +22,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 const clientBuildPath = path.resolve(projectRoot, "dist");
+const dataDirectoryPath = path.resolve(projectRoot, "data");
+const dataFilePath = path.resolve(dataDirectoryPath, "chat-data.json");
 const isProduction = process.env.NODE_ENV === "production";
 const port = Number(process.env.PORT || 3001);
 const configuredOrigins = process.env.ALLOWED_ORIGINS?.split(",")
@@ -51,6 +53,50 @@ const typingBySession = new Map<string, Record<string, boolean>>();
 const agentSockets = new Set<string>();
 const customerSocketsBySession = new Map<string, Set<string>>();
 
+interface PersistedChatData {
+  sessions: ChatSession[];
+  messagesBySession: Record<string, ChatMessage[]>;
+}
+
+function normalizeCustomerName(customerName: string): string {
+  return customerName.trim().toLowerCase();
+}
+
+function serializeChatData(): PersistedChatData {
+  return {
+    sessions: getAllSessions(),
+    messagesBySession: getMessagesRecord(),
+  };
+}
+
+function persistChatData(): void {
+  mkdirSync(dataDirectoryPath, { recursive: true });
+  writeFileSync(dataFilePath, JSON.stringify(serializeChatData(), null, 2), "utf-8");
+}
+
+function loadPersistedChatData(): void {
+  mkdirSync(dataDirectoryPath, { recursive: true });
+  if (!existsSync(dataFilePath)) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(dataFilePath, "utf-8")) as Partial<PersistedChatData>;
+    sessions.clear();
+    messagesBySession.clear();
+
+    for (const session of parsed.sessions ?? []) {
+      sessions.set(session.id, session);
+    }
+
+    for (const [sessionId, messages] of Object.entries(parsed.messagesBySession ?? {})) {
+      messagesBySession.set(sessionId, messages);
+    }
+  } catch (error) {
+    console.error("Unable to load persisted chat data.", error);
+  }
+}
+
 function getAllSessions(): ChatSession[] {
   return [...sessions.values()].sort((left, right) => {
     return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
@@ -77,10 +123,13 @@ function storeSession(incoming: ChatSession): ChatSession {
   );
 
   if (!next) {
+    sessions.set(incoming.id, incoming);
+    persistChatData();
     return incoming;
   }
 
   sessions.set(next.id, next);
+  persistChatData();
   return next;
 }
 
@@ -124,21 +173,41 @@ function createSession(customerName: string): ChatSession {
   };
   sessions.set(session.id, session);
   messagesBySession.set(session.id, []);
+  persistChatData();
   return session;
 }
 
+function findSessionByCustomerName(customerName: string): ChatSession | undefined {
+  const normalizedCustomerName = normalizeCustomerName(customerName);
+  return getAllSessions().find(
+    (session) => normalizeCustomerName(session.customerName) === normalizedCustomerName,
+  );
+}
+
 function getOrCreateSession(payload: SessionInitPayload): ChatSession {
+  const trimmedCustomerName = payload.customerName.trim();
   const existing = payload.sessionId ? sessions.get(payload.sessionId) : undefined;
   if (existing) {
     const nextSession = storeSession({
       ...existing,
-      customerName: payload.customerName,
+      customerName: trimmedCustomerName,
       isOnline: true,
+      status: "open",
     });
     return nextSession;
   }
 
-  return createSession(payload.customerName);
+  const existingByName = findSessionByCustomerName(trimmedCustomerName);
+  if (existingByName) {
+    return storeSession({
+      ...existingByName,
+      customerName: trimmedCustomerName,
+      isOnline: true,
+      status: "open",
+    });
+  }
+
+  return createSession(trimmedCustomerName);
 }
 
 function updateTypingState(state: TypingState): void {
@@ -183,6 +252,7 @@ function pushMessage(payload: OutboundMessage): ChatMessage {
   };
 
   sessions.set(nextSession.id, nextSession);
+  persistChatData();
   updateTypingState({ sessionId: payload.sessionId, role: payload.sender, isTyping: false });
   io.to("agents").emit("message:new", message);
   io.to(`session:${payload.sessionId}`).emit("message:new", message);
@@ -198,6 +268,7 @@ function updateStoredMessage(sessionId: string, updatedMessage: ChatMessage): vo
       message.id === updatedMessage.id ? updatedMessage : message
     ),
   );
+  persistChatData();
 }
 
 function findMessage(sessionId: string, messageId: string): ChatMessage {
@@ -224,6 +295,38 @@ function refreshSessionPreview(sessionId: string): void {
     lastMessagePreview: latestMessage ? buildPreview(latestMessage) : "Conversation started.",
   });
   emitSessionUpdate(nextSession);
+}
+
+function detachCustomerSocket(socket: ServerSocket): void {
+  if (socket.data.role !== "customer" || typeof socket.data.sessionId !== "string") {
+    return;
+  }
+
+  const sessionId = socket.data.sessionId;
+  updateTypingState({ sessionId, role: "customer", isTyping: false });
+  socket.leave(`session:${sessionId}`);
+
+  const sockets = customerSocketsBySession.get(sessionId);
+  if (sockets) {
+    sockets.delete(socket.id);
+
+    if (sockets.size === 0) {
+      customerSocketsBySession.delete(sessionId);
+      const session = sessions.get(sessionId);
+      if (session) {
+        const nextSession = storeSession({
+          ...session,
+          isOnline: false,
+        });
+        emitSessionUpdate(nextSession);
+      }
+    } else {
+      customerSocketsBySession.set(sessionId, sockets);
+    }
+  }
+
+  delete socket.data.role;
+  delete socket.data.sessionId;
 }
 
 function deleteMessage(payload: DeleteMessagePayload): ChatMessage {
@@ -289,6 +392,8 @@ app.get("/health", (_request, response) => {
   response.json({ ok: true, sessions: sessions.size, agentsOnline: agentSockets.size });
 });
 
+loadPersistedChatData();
+
 if (existsSync(path.join(clientBuildPath, "index.html"))) {
   app.use(express.static(clientBuildPath));
 
@@ -315,6 +420,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("session:init", (payload: SessionInitPayload) => {
+    detachCustomerSocket(socket);
     const session = getOrCreateSession(payload);
     const customerSockets = customerSocketsBySession.get(session.id) ?? new Set<string>();
     customerSockets.add(socket.id);
@@ -330,6 +436,10 @@ io.on("connection", (socket) => {
     });
     socket.emit("agent:presence", { onlineCount: agentSockets.size });
     io.to("agents").emit("session:updated", session);
+  });
+
+  socket.on("session:logout", () => {
+    detachCustomerSocket(socket);
   });
 
   socket.on("session:focus", (sessionId: string) => {
@@ -403,27 +513,7 @@ io.on("connection", (socket) => {
       broadcastAgentPresence();
     }
 
-    if (socket.data.role === "customer" && typeof socket.data.sessionId === "string") {
-      const sessionId = socket.data.sessionId;
-      const sockets = customerSocketsBySession.get(sessionId);
-      if (sockets) {
-        sockets.delete(socket.id);
-
-        if (sockets.size === 0) {
-          customerSocketsBySession.delete(sessionId);
-          const session = sessions.get(sessionId);
-          if (session) {
-            const nextSession = storeSession({
-              ...session,
-              isOnline: false,
-            });
-            emitSessionUpdate(nextSession);
-          }
-        } else {
-          customerSocketsBySession.set(sessionId, sockets);
-        }
-      }
-    }
+    detachCustomerSocket(socket);
   });
 });
 
