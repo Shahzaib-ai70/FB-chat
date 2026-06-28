@@ -1,0 +1,4 @@
+node_modules
+dist
+.trae
+.env
