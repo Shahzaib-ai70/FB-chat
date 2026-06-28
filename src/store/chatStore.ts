@@ -15,6 +15,9 @@ import {
   upsertSession,
 } from "../../shared/chat";
 
+const CUSTOMER_SESSION_STORAGE_KEY = "fb-chat-customer-session";
+const AGENT_SESSION_STORAGE_KEY = "fb-chat-agent-selected-session";
+
 function resolveServerUrl(): string | undefined {
   const configuredUrl = import.meta.env.VITE_SERVER_URL?.trim();
   if (configuredUrl) {
@@ -29,6 +32,73 @@ function resolveServerUrl(): string | undefined {
 }
 
 type ConnectionState = "idle" | "connecting" | "connected" | "disconnected";
+
+interface StoredCustomerSession {
+  customerName: string;
+  sessionId: string;
+}
+
+function readStoredCustomerSession(): StoredCustomerSession | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(CUSTOMER_SESSION_STORAGE_KEY);
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as Partial<StoredCustomerSession>;
+    if (
+      typeof parsed.customerName === "string" &&
+      parsed.customerName.trim() &&
+      typeof parsed.sessionId === "string" &&
+      parsed.sessionId.trim()
+    ) {
+      return {
+        customerName: parsed.customerName.trim(),
+        sessionId: parsed.sessionId.trim(),
+      };
+    }
+  } catch {
+    window.localStorage.removeItem(CUSTOMER_SESSION_STORAGE_KEY);
+  }
+
+  return null;
+}
+
+function writeStoredCustomerSession(session: StoredCustomerSession): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(CUSTOMER_SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function readStoredAgentSelection(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.localStorage.getItem(AGENT_SESSION_STORAGE_KEY)?.trim() || null;
+}
+
+function writeStoredAgentSelection(sessionId: string | null): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (!sessionId) {
+    window.localStorage.removeItem(AGENT_SESSION_STORAGE_KEY);
+    return;
+  }
+
+  window.localStorage.setItem(AGENT_SESSION_STORAGE_KEY, sessionId);
+}
+
+const storedCustomerSession = readStoredCustomerSession();
+const storedAgentSelection = readStoredAgentSelection();
 
 interface ChatState {
   role: Role | null;
@@ -68,9 +138,9 @@ export function pickNextSessionId(
 export const useChatStore = create<ChatState>((set, get) => ({
   role: null,
   socket: null,
-  sessionId: null,
-  customerName: "",
-  selectedSessionId: null,
+  sessionId: storedCustomerSession?.sessionId ?? null,
+  customerName: storedCustomerSession?.customerName ?? "",
+  selectedSessionId: storedAgentSelection,
   sessions: [],
   messagesBySession: {},
   typingBySession: {},
@@ -94,6 +164,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     socket.on("connect", () => {
       set({ connectionState: "connected", error: null });
+
+      if (role === "customer") {
+        const storedSession = readStoredCustomerSession();
+        if (storedSession) {
+          socket.emit("session:init", storedSession);
+        }
+      }
     });
 
     socket.on("disconnect", () => {
@@ -109,6 +186,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     socket.on("session:ready", (payload: SessionBootstrap) => {
+      writeStoredCustomerSession({
+        customerName: payload.session.customerName,
+        sessionId: payload.session.id,
+      });
       set((state) => ({
         sessionId: payload.session.id,
         customerName: payload.session.customerName,
@@ -121,19 +202,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     socket.on("agent:bootstrap", (payload: AgentBootstrap) => {
-      set((state) => ({
-        sessions: payload.sessions,
-        messagesBySession: payload.messagesBySession,
-        selectedSessionId: pickNextSessionId(payload.sessions, state.selectedSessionId),
-      }));
+      set((state) => {
+        const selectedSessionId = pickNextSessionId(payload.sessions, state.selectedSessionId);
+        writeStoredAgentSelection(selectedSessionId);
+        return {
+          sessions: payload.sessions,
+          messagesBySession: payload.messagesBySession,
+          selectedSessionId,
+        };
+      });
     });
 
     socket.on("session:updated", (session: ChatSession) => {
       set((state) => {
         const sessions = upsertSession(state.sessions, session);
+        const selectedSessionId = pickNextSessionId(sessions, state.selectedSessionId);
+        writeStoredAgentSelection(selectedSessionId);
         return {
           sessions,
-          selectedSessionId: pickNextSessionId(sessions, state.selectedSessionId),
+          selectedSessionId,
         };
       });
     });
@@ -179,13 +266,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    set({ customerName, sessionId: null });
-    socket.emit("session:init", { customerName });
+    const existingSessionId = get().sessionId;
+    const payload = existingSessionId
+      ? { customerName, sessionId: existingSessionId }
+      : { customerName };
+
+    set({ customerName });
+    socket.emit("session:init", payload);
   },
   subscribeAgent: () => {
     get().socket?.emit("agent:subscribe");
   },
   selectSession: (sessionId) => {
+    writeStoredAgentSelection(sessionId);
     set({ selectedSessionId: sessionId });
     get().socket?.emit("session:focus", sessionId);
   },
