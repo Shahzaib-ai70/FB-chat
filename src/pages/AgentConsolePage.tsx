@@ -34,6 +34,10 @@ export function AgentConsolePage() {
     }
   }, [connectionState, subscribeAgent]);
 
+  useEffect(() => {
+    document.title = "Facebook Chat Admin";
+  }, []);
+
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],

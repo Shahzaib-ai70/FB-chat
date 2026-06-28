@@ -29,6 +29,10 @@ export function CustomerChatPage() {
     setDraftName(customerName);
   }, [customerName]);
 
+  useEffect(() => {
+    document.title = "Facebook Chat";
+  }, []);
+
   const messages = sessionId ? messagesBySession[sessionId] ?? [] : [];
   const typingRole = sessionId && typingBySession[sessionId]?.agent ? "agent" : undefined;
   const showNamePrompt = !sessionId;
