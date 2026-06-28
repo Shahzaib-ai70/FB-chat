@@ -95,9 +95,6 @@ export function CustomerChatPage() {
             </div>
             <p className="eyebrow">Facebook Chat</p>
             <h2 id="chat-name-title">Add your name to open chat</h2>
-            <p className="hero-copy">
-              Enter your name to login or reopen your old chat history with support.
-            </p>
             <input
               className="name-input"
               onChange={(event) => setDraftName(event.target.value)}
