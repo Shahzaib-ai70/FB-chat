@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Trash2 } from "lucide-react";
 import type { ChatMessage, Role } from "../../shared/chat";
 
@@ -26,6 +27,12 @@ export function ConversationFeed({
   onDeleteMessage,
   onToggleReaction,
 }: ConversationFeedProps) {
+  const endOfFeedRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    endOfFeedRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, typingRole]);
+
   if (messages.length === 0) {
     return (
       <div className={`empty-state ${compactEmptyState ? "centered" : ""}`} aria-live="polite">
@@ -97,6 +104,7 @@ export function ConversationFeed({
           <span>{typingRole === "agent" ? "Agent is typing..." : `${customerName} is typing...`}</span>
         </div>
       ) : null}
+      <div aria-hidden="true" className="feed-end-anchor" ref={endOfFeedRef} />
     </div>
   );
 }
