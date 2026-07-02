@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createGuestName } from "../../shared/chat";
 import { ConversationFeed } from "../components/ConversationFeed";
 import { MessageComposer } from "../components/MessageComposer";
 import { useChatStore } from "../store/chatStore";
@@ -20,33 +21,36 @@ export function CustomerChatPage() {
     toggleReaction,
     typingBySession,
   } = useChatStore();
-  const [draftName, setDraftName] = useState(customerName);
+  const [isLoggedOut, setIsLoggedOut] = useState(false);
+  const hasRequestedAutoStart = useRef(false);
 
   useEffect(() => {
     connect("customer");
   }, [connect]);
 
   useEffect(() => {
-    setDraftName(customerName);
-  }, [customerName]);
-
-  useEffect(() => {
     document.title = "Facebook Chat";
   }, []);
 
-  const messages = sessionId ? messagesBySession[sessionId] ?? [] : [];
-  const typingRole = sessionId && typingBySession[sessionId]?.agent ? "agent" : undefined;
-  const showNamePrompt = !sessionId;
-
-  function handleOpenChat() {
-    const trimmed = draftName.trim();
-    if (!trimmed || connectionState !== "connected") {
+  useEffect(() => {
+    if (sessionId) {
+      hasRequestedAutoStart.current = false;
+      setIsLoggedOut(false);
       return;
     }
 
-    setCustomerName(trimmed);
-    initCustomerSession(trimmed);
-  }
+    if (connectionState !== "connected" || isLoggedOut || hasRequestedAutoStart.current) {
+      return;
+    }
+
+    const nextName = customerName.trim() || createGuestName();
+    hasRequestedAutoStart.current = true;
+    setCustomerName(nextName);
+    initCustomerSession(nextName);
+  }, [connectionState, customerName, initCustomerSession, isLoggedOut, sessionId, setCustomerName]);
+
+  const messages = sessionId ? messagesBySession[sessionId] ?? [] : [];
+  const typingRole = sessionId && typingBySession[sessionId]?.agent ? "agent" : undefined;
 
   return (
     <section className="workspace customer-chat-only">
@@ -58,10 +62,32 @@ export function CustomerChatPage() {
           </div>
           <div className="panel-actions">
             {sessionId ? (
-              <button className="logout-button" onClick={logoutCustomer} type="button">
+              <button
+                className="logout-button"
+                onClick={() => {
+                  hasRequestedAutoStart.current = false;
+                  setIsLoggedOut(true);
+                  logoutCustomer();
+                }}
+                type="button"
+              >
                 Logout
               </button>
-            ) : null}
+            ) : (
+              <button
+                className="logout-button"
+                onClick={() => {
+                  const nextName = customerName.trim() || createGuestName();
+                  hasRequestedAutoStart.current = true;
+                  setIsLoggedOut(false);
+                  setCustomerName(nextName);
+                  initCustomerSession(nextName);
+                }}
+                type="button"
+              >
+                Login
+              </button>
+            )}
             <span
               aria-label={agentOnlineCount > 0 ? "Support online" : "Support offline"}
               className={`presence-dot ${agentOnlineCount > 0 ? "online" : "offline"}`}
@@ -87,38 +113,6 @@ export function CustomerChatPage() {
           placeholder="Write a message..."
         />
       </div>
-      {showNamePrompt ? (
-        <div className="name-overlay" role="dialog" aria-modal="true" aria-labelledby="chat-name-title">
-          <div className="name-modal">
-            <div className="facebook-logo large" aria-hidden="true">
-              <span>f</span>
-            </div>
-            <p className="eyebrow">Facebook Chat</p>
-            <h2 id="chat-name-title">Add your name to open chat</h2>
-            <input
-              className="name-input"
-              onChange={(event) => setDraftName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  handleOpenChat();
-                }
-              }}
-              placeholder="Enter your name"
-              type="text"
-              value={draftName}
-            />
-            <button
-              className="open-chat-button"
-              disabled={!draftName.trim() || connectionState !== "connected"}
-              onClick={handleOpenChat}
-              type="button"
-            >
-              Login / Open Chat
-            </button>
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }
